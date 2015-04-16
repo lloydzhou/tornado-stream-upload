@@ -6,6 +6,7 @@ can upload the file from "multipart/form-data",
 save it into file system or mongodb, and set the metadata into request arguments.
 """
 import tempfile
+from tornado.escape import native_str, parse_qs_bytes
 
 class StreamRequestBodyMixin(object):
     content_type = None
@@ -41,10 +42,7 @@ class StreamRequestBodyMixin(object):
         If upload file in request, will save dict to arguments.
         Can not using self.get_argument() to access this params!!!
         """
-        if self.request.arguments.get(name, None):
-            self.request.arguments[name].append(value)
-        else:
-            self.request.arguments[name] = [value]
+        self.request.arguments.setdefault(name, []).extend(value)
 
     def _data_received_part(self, part):
 
@@ -60,9 +58,9 @@ class StreamRequestBodyMixin(object):
     def _data_received_part_end(self):
 
         if not self.ctx.get('filename', None):
-            self.add_argument(self.ctx.get('name'), self.ctx.get('value'))
+            self.add_argument(self.ctx.get('name'), [self.ctx.get('value')])
         else:
-            self.add_argument(self.ctx.get('name'), self.ctx)
+            self.add_argument(self.ctx.get('name'), [self.ctx])
         self.data_received_part_end()
 
     def data_received(self, data):
@@ -70,6 +68,13 @@ class StreamRequestBodyMixin(object):
             self.boundary = self.get_boundary()
 
         if self.content_type.startswith('application/x-www-form-urlencoded'):
+            try:
+                uri_arguments = parse_qs_bytes(native_str(data), keep_blank_values=True)
+                for name, values in uri_arguments.items():
+                    if values:
+                        self.add_argument(name, values)
+            except:
+                pass
             chunks = []
         elif self.content_type.startswith('multipart/form-data') and self.boundary:
             chunks = data.split(b"--" + self.boundary)
@@ -77,7 +82,7 @@ class StreamRequestBodyMixin(object):
             if not self.ctx.get('name'):
                 name = self.request.headers.get('X-Name', 'file')
                 filename = self.request.headers.get('X-Filename', 'filename')
-                chunks = ['Content-Disposition: form-data; name="%s"; filename="%s"\r\n%s\r\n\r\n%s\r\n'
+                chunks = ['Content-Disposition: form-data; name="%s"; filename="%s"\r\nContent-Type: %s\r\n\r\n%s\r\n'
                           % (name, filename, self.content_type, data)]
             else:
                 chunks = [data]
