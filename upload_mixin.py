@@ -7,13 +7,14 @@ save it into file system or mongodb, and set the metadata into request arguments
 """
 import tempfile
 
-class UploadHandlerMixin(object):
+class StreamRequestBodyMixin(object):
+    content_type = None
     boundary = None
     ctx = {}
     def get_boundary(self):
-        content_type = self.request.headers.get('Content-Type', '')
-        if content_type.startswith("multipart/form-data"):
-            fields = content_type.split(";")
+        self.content_type = self.request.headers.get('Content-Type', '')
+        if self.content_type.startswith("multipart/form-data"):
+            fields = self.content_type.split(";")
             for field in fields:
                 k, sep, v = field.strip().partition("=")
                 if k == "boundary" and v:
@@ -53,6 +54,9 @@ class UploadHandlerMixin(object):
             self.ctx['size'] = self.ctx.get('size', 0) + len(part)
         self.data_received_part(part)
 
+        if self.ctx.get('size', 0) >= int(self.request.headers.get('Content-Length', '0')):
+            self._data_received_part_end()
+
     def _data_received_part_end(self):
 
         if not self.ctx.get('filename', None):
@@ -65,7 +69,19 @@ class UploadHandlerMixin(object):
         if not self.boundary:
             self.boundary = self.get_boundary()
 
-        chunks = data.split(b"--" + self.boundary)
+        if self.content_type.startswith('application/x-www-form-urlencoded'):
+            chunks = []
+        elif self.content_type.startswith('multipart/form-data') and self.boundary:
+            chunks = data.split(b"--" + self.boundary)
+        else:
+            if not self.ctx.get('name'):
+                name = self.request.headers.get('X-Name', 'file')
+                filename = self.request.headers.get('X-Filename', 'filename')
+                chunks = ['Content-Disposition: form-data; name="%s"; filename="%s"\r\n%s\r\n\r\n%s\r\n'
+                          % (name, filename, self.content_type, data)]
+            else:
+                chunks = [data]
+
         for chunk in chunks:
             if len(chunk) == 0:
                 pass
@@ -92,26 +108,26 @@ class UploadHandlerMixin(object):
         pass
 
 
-class MongoUploadHandlerMixin(UploadHandlerMixin):
-    filefs = None
+class UploadHandlerMixin(StreamRequestBodyMixin):
     filehandler = None
-    def data_received_header(self, name, filename=None, content_type=None):
-        self.filehandler = self.filefs.new_file(filename=filename, contentType=content_type)
-        self.ctx['fid'] = str(self.filehandler._id)
-
     def data_received_part(self, part):
-        if self.filehandler:
+        if self.filehandler and not self.filehandler.closed:
             self.filehandler.write(part)
 
     def data_received_part_end(self):
         if self.filehandler:
             self.filehandler.close()
-            self.filehandler = None
+
+
+class MongoUploadHandlerMixin(UploadHandlerMixin):
+    filefs = None
+    def data_received_header(self, name, filename=None, content_type=None):
+        self.filehandler = self.filefs.new_file(filename=filename, contentType=content_type)
+        self.ctx['fid'] = str(self.filehandler._id)
 
 
 class FileUploadHandlerMixin(UploadHandlerMixin):
     uploadpath = None
-    filehandler = None
     def data_received_header(self, name, filename=None, content_type=None):
         if filename:
             if self.uploadpath:
@@ -121,14 +137,5 @@ class FileUploadHandlerMixin(UploadHandlerMixin):
             else:
                 self.filehandler = tempfile.NamedTemporaryFile(delete=False)
                 self.ctx['tmpfile'] = self.filehandler.name
-
-    def data_received_part(self, part):
-        if self.filehandler:
-            self.filehandler.write(part)
-
-    def data_received_part_end(self):
-        if self.filehandler:
-            self.filehandler.close()
-            self.filehandler = None
 
 
